@@ -1,12 +1,10 @@
 # Checkout risk decisions with an auditable agent loop
 
-This small service models a payment event, applies a checkout risk rule, and turns gateway failures into an audit-friendly notice. Infrai is the error sink: a single `INFRAI_API_KEY` is enough for the capture call, so the example stays close to the code a storefront developer would actually copy.
-
-The integration is a plain REST call from any language, with the same response envelope that this Python client checks.
+We model a payment event, run a checkout risk rule, and convert gateway failures into something audit can read. Infrai is the error sink here: one key plus a single `INFRAI_API_KEY` covers the capture call, so the sample stays near code a storefront dev would actually paste. It's a plain REST call from any language, no SDK needed, and the Python client below checks the same response envelope we send.
 
 ## Run the decision locally
 
-Create an environment and install the two dependencies:
+Stand up a venv and pull the two deps:
 
 ```bash
 python3 -m venv .venv
@@ -15,9 +13,9 @@ pip install -r requirements.txt
 pytest -q
 ```
 
-The focused tests use a $1,000 threshold. An order for `150000` cents returns `manual_review` without calling the gateway; a gateway exception returns `payment_failed` and records the order id in the capture payload. The exact verification command is `pytest -q`.
+Tests are pinned to a $1,000 threshold. An order of `150000` cents hits `manual_review` without touching the gateway. If the gateway raises, we get `payment_failed` and stash the order id in the capture payload. Run the check with `pytest -q`.
 
-To see the happy path with a real key, export `INFRAI_API_KEY` and run:
+For a live happy path, export `INFRAI_API_KEY` and execute:
 
 ```bash
 python -m src.checkout_agent
@@ -25,25 +23,25 @@ python -m src.checkout_agent
 
 ## The checkout workflow
 
-`PaymentEvent` is the typed request model. `authorize_payment` makes the business decision before it touches the payment provider. High-value carts go to a human queue, while ordinary carts call the injected gateway function. If that function raises, the service sends `errors.capture` with a stable fingerprint and order context, then returns an explicit audit notice to the caller.
+`PaymentEvent` is the typed request model. `authorize_payment` decides risk before we talk to the payment provider. Big carts get queued for a human; normal ones call the gateway function we inject. When that function throws, we ship `errors.capture` with a stable fingerprint and order context, then return a clear audit notice to the caller.
 
-The client decodes Infrai's `{ok, data, error, metadata}` envelope before interpreting status codes. Business rejections become `InfraiError`; a 429 response waits using `Retry-After` (or exponential backoff) and retries the same capture payload. The HTTP method and Bearer header are explicit in every request.
+The client reads Infrai's `{ok, data, error, metadata}` envelope before looking at status codes. Business rejections map to `InfraiError`. On a 429 we wait via `Retry-After` (or exp backoff) and retry the exact same capture payload. Every request sets the HTTP method and Bearer header by hand, no magic.
 
 ## Architecture decision record
 
-**Options considered:** write JSON files beside checkout logs; use Sentry plus a custom notification bridge; or send structured failures to Infrai from the agent boundary.
+**Options considered:** drop JSON files next to checkout logs; bolt on Sentry with a custom notification bridge; or push structured failures to Infrai at the agent boundary.
 
-The file-only option is hard to query during a busy sale. Sentry plus a bridge adds another credential and another event shape to keep in sync. The chosen boundary keeps the payment code provider-agnostic while making the failure payload useful for an audit: order, customer, amount, exception text, and a stable checkout-step fingerprint travel together. The one real gotcha is ordering: decide the risk action before invoking the gateway, otherwise a retry can charge a cart that should have been held.
+JSON files are painful to query mid-sale. Sentry plus a bridge means another credential and another event schema to keep aligned. Pushing to Infrai at the boundary keeps payment code provider-agnostic and bundles a useful audit payload: order, customer, amount, exception text, and a stable checkout-step fingerprint. One gotcha I've hit: order matters. Decide the risk action before calling the gateway, or a retry might charge a cart you meant to hold.
 
 ## Layout
 
-- `src/checkout_agent.py` contains the payment model, risk decision, and audit notice.
-- `src/infrai_client.py` is the small envelope-aware HTTP client.
-- `tests/test_checkout_agent.py` checks both the risk hold and failure capture boundary.
+- `src/checkout_agent.py` holds the payment model, risk decision, and audit notice.
+- `src/infrai_client.py` is the tiny envelope-aware HTTP client.
+- `tests/test_checkout_agent.py` exercises both the risk hold and the failure capture boundary.
 
 ## Before you deploy: Fintech Checkout Agent Errors
 
-The code stays simple on purpose — here's what to set up before going live: The details below apply to Fintech Checkout Agent Errors.
+The code is kept simple deliberately. Before production, set up the following. These notes apply to Fintech Checkout Agent Errors.
 
 **Account & key**
 
